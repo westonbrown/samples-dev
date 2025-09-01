@@ -33,6 +33,8 @@ else:
 # Disable FAISS GPU warnings globally - we only use CPU
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
+from opentelemetry import baggage, context
+
 from strands import Agent
 from strands.models import BedrockModel
 from strands.models.llamacpp import LlamaCppModel
@@ -644,6 +646,13 @@ def display_welcome_message():
         print()
 
 
+def set_session_context(session_id=None):
+    """Set the session ID in OpenTelemetry baggage for trace correlation"""
+    ctx = baggage.set_baggage("session.id", session_id)
+    token = context.attach(ctx)
+    return token
+
+
 def main():
     """Main entry point"""
     global USE_API_CLIENT
@@ -676,6 +685,8 @@ def main():
             print()
 
     display_welcome_message()
+
+    set_session_context(SESSION_ID)
 
     if USE_RICH_UI and console:
         console.print("🚀 [bold green]Assistant is ready![/bold green]")

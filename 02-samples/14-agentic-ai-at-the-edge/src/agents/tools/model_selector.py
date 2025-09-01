@@ -10,7 +10,7 @@ from strands import tool, Agent
 from strands.models.llamacpp import LlamaCppModel
 import logging
 import json
-from config import BEDROCK_MODEL_ID, LLAMACPP_URL
+from config import BEDROCK_MODEL_ID, LLAMACPP_URL, SESSION_ID
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,10 @@ Always prefer LOCAL unless remote is clearly needed."""
 
         # Create analysis agent
         analysis_agent = Agent(
-            model=local_model, system_prompt=analysis_prompt, callback_handler=None
+            model=local_model, 
+            system_prompt=analysis_prompt, 
+            callback_handler=None,
+            trace_attributes={"session.id", SESSION_ID},
         )
 
         # Prepare analysis query

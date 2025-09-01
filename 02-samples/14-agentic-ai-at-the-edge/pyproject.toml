@@ -26,7 +26,7 @@ classifiers = [
 
 dependencies = [
     # Core Framework
-    "strands-agents @ git+https://github.com/westonbrown/sdk-python.git@main",
+    "strands-agents[otel] @ git+https://github.com/westonbrown/sdk-python.git@main",
 
     # Configuration & Environment
     "python-dotenv>=1.0.0,<2.0.0",
@@ -51,6 +51,9 @@ dependencies = [
     # Content Processing
     "markdownify>=0.11.0,<1.0.0",
     "readabilipy>=0.2.0,<1.0.0",
+
+    # Observation
+    "aws-opentelemetry-distro~=0.10.1",
 
     # System & Utilities
     "psutil>=5.9.0,<8.0.0",
