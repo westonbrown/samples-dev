@@ -221,11 +221,13 @@ start_assistant() {
     OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
     
     # Start container with direct docker run
+    # Note: Container only runs llama-server on port 8080
+    # Port 8000 is NOT needed (main.py runs on host for API mode)
     docker run -d \
         --name strands-edge-personal-assistant \
         --restart unless-stopped \
         $RUN_PLATFORM \
-        -p 8080:8080 -p 8000:8000 \
+        -p 8080:8080 \
         -v "$MODELS_DIR:/app/models" \
         -v "$DATA_DIR:/app/data" \
         -v "$LOGS_DIR:/app/logs" \
@@ -287,12 +289,18 @@ show_usage() {
     echo -e "${GREEN}🤖 Your Edge Personal Assistant is now running!${NC}"
     echo ""
     echo -e "${CYAN}📋 Quick Commands:${NC}"
+    echo "  Container provides:     llama-server on port 8080"
+    echo ""
     if [ "$API_MODE" = "true" ]; then
-    echo "  API Health Check:       curl http://localhost:8000/health"
-    echo "  Send Chat Request:      curl -X POST http://localhost:8000/chat -H 'Content-Type: application/json' -d '{\"prompt\":\"Hello\"}'"
-    echo "  API Documentation:      http://localhost:8000/docs"
+    echo "  For API Mode:"
+    echo "  1. Open new terminal"
+    echo "  2. Run: ENABLE_API=true python main.py"
+    echo "  3. API Health Check:    curl http://localhost:8000/health"
+    echo "  4. API Documentation:   http://localhost:8000/docs"
 else
-    echo "  Connect to assistant:    docker exec -it -e API_ALREADY_RUNNING=true strands-edge-personal-assistant python /app/main.py"
+    echo "  For Interactive Mode:"
+    echo "  1. Open new terminal"
+    echo "  2. Run: python main.py"
 fi
     echo "  View logs:              docker logs -f strands-edge-personal-assistant"
     echo "  Check status:           docker ps"
@@ -327,19 +335,9 @@ fi
 
 # Function to connect to the assistant
 connect_assistant() {
-    print_header "CONNECTING TO PERSONAL ASSISTANT"
-    
-    print_status "Connecting to the edge personal assistant..."
-    print_status "Type 'exit' to disconnect from the assistant"
-    echo ""
-    
-    # Connect to the running container with environment variables
-    docker exec -it \
-        -e API_ALREADY_RUNNING=true \
-        -e CONTEXT_WINDOW="${CONTEXT_WINDOW:-20}" \
-        -e MAX_TOKENS="${MAX_TOKENS:-1024}" \
-        -e LLAMA_CTX_SIZE="${LLAMA_CTX_SIZE:-2048}" \
-        strands-edge-personal-assistant python /app/main.py
+    print_status "Run main.py locally:"
+    echo "  Interactive: python main.py"
+    echo "  API mode: ENABLE_API=true python main.py"
 }
 
 # Main setup function
@@ -362,19 +360,20 @@ main() {
             
             # Ask if user wants to connect immediately
             echo ""
+            echo -e "${CYAN}Container is providing llama-server on port 8080${NC}"
+            echo ""
             if [ "$API_MODE" = "true" ]; then
-                echo -e "${CYAN}To use the assistant:${NC}"
+                echo -e "${CYAN}To run the API server:${NC}"
+                echo "  1. Open a new terminal"
+                echo "  2. Navigate to: $(dirname $SCRIPT_DIR)"
+                echo "  3. Run: ENABLE_API=true python main.py"
+                echo ""
+                echo "The API will be available at http://localhost:8000"
+            else
+                echo -e "${CYAN}To run interactive mode:${NC}"
                 echo "  1. Open a new terminal"
                 echo "  2. Navigate to: $(dirname $SCRIPT_DIR)"
                 echo "  3. Run: python main.py"
-                echo ""
-                echo "The API server is running at http://localhost:8080"
-            else
-                read -p "Would you like to connect to the assistant now? (Y/n): " -n 1 -r
-                echo ""
-                if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                    connect_assistant
-                fi
             fi
             ;;
             

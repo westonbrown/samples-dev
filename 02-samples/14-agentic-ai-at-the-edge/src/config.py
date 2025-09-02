@@ -23,7 +23,7 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1024"))
 LLAMA_CTX_SIZE = int(os.getenv("LLAMA_CTX_SIZE", "2048"))
 
 # Voice configuration
-VOICE_DURATION = 10
+VOICE_DURATION = 5 
 VOICE_SAMPLE_RATE = 16000
 
 # UI configuration

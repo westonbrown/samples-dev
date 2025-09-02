@@ -326,7 +326,6 @@ def update_orchestrator_model(provider: str):
     orchestrator.system_prompt = new_prompt
 
     # Update all agent models to match orchestrator's selection
-    # Note: Cockpit controls use local model only by design
 
     return orchestrator
 
@@ -430,6 +429,9 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
         # Use FFmpeg with Whisper filter for transcription
         import subprocess
         import json
+        import tempfile
+        import os
+        import time
 
         # Determine audio input source
         if sys.platform == "darwin":
@@ -437,83 +439,215 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
         else:
             audio_input = ["-f", "pulse", "-i", "default"]  # Linux
 
-        # Use FFmpeg with Whisper support (compiled in container or local)
-        ffmpeg_path = FFMPEG_PATH
-        whisper_model = os.getenv("WHISPER_MODEL_PATH", "/app/models/ggml-base.bin")
-
-        # Set library paths for FFmpeg with Whisper
-        env = os.environ.copy()
-        if sys.platform == "darwin":
-            # Auto-detect Whisper library paths for macOS
-            dyld_path = os.getenv("DYLD_LIBRARY_PATH", "")
-            if not dyld_path and ffmpeg_path and "whisper" in ffmpeg_path.lower():
-                # Try to find whisper.cpp build directory relative to ffmpeg
-                ffmpeg_dir = Path(ffmpeg_path).parent.parent.parent
-                whisper_build = ffmpeg_dir / "whisper.cpp" / "build"
-                if whisper_build.exists():
-                    dyld_paths = [
-                        str(whisper_build / "src"),
-                        str(whisper_build / "ggml" / "src"),
-                        str(whisper_build / "ggml" / "src" / "ggml-metal"),
-                        str(whisper_build / "ggml" / "src" / "ggml-blas"),
-                    ]
-                    dyld_path = ":".join([p for p in dyld_paths if Path(p).exists()])
-            if dyld_path:
-                env["DYLD_LIBRARY_PATH"] = dyld_path
-
-        cmd = [
-            ffmpeg_path,
-            "-loglevel",
-            "warning",
-            *audio_input,
-            "-t",
-            str(VOICE_DURATION),  # Record duration
-            "-af",
-            f"whisper=model={whisper_model}:language=en:format=text:destination=-",
-            "-f",
-            "null",
-            "-",
-        ]
-
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=VOICE_DURATION + 10, env=env
-            )
-
-            # Check for errors
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-                if "Library not loaded" in error_msg or "dyld" in error_msg:
-                    return "[ERROR] FFmpeg Whisper library not found. Check DYLD_LIBRARY_PATH"
-                elif "avfoundation" in error_msg:
-                    return "[ERROR] Microphone access denied. Please grant permission in System Settings"
+        # Check if we should try host-based transcription when container mode is enabled
+        use_host_transcription = os.getenv("USE_CONTAINER_WHISPER", "false").lower() == "true"
+        container_name = os.getenv("CONTAINER_NAME", "strands-edge-personal-assistant")
+        
+        if use_host_transcription:
+            # Record on host, try to transcribe on host with available tools
+            try:
+                
+                # Create a temporary WAV file
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+                    temp_audio_path = temp_audio.name
+                
+                # Record audio to WAV file using host FFmpeg (no Whisper needed)
+                record_cmd = [
+                    "ffmpeg",
+                    "-loglevel", "warning",
+                    *audio_input,
+                    "-t", str(VOICE_DURATION),
+                    "-ar", "16000",  # 16kHz sample rate for Whisper
+                    "-ac", "1",      # Mono audio
+                    "-f", "wav",
+                    "-y",            # Overwrite output
+                    temp_audio_path
+                ]
+                
+                
+                if USE_RICH_UI and console:
+                    console.print(f"⏺️  [dim]Recording for {VOICE_DURATION} seconds...[/dim]")
+                
+                # Record the audio
+                start_time = time.time()
+                result = subprocess.run(
+                    record_cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=VOICE_DURATION + 5
+                )
+                recording_time = time.time() - start_time
+                
+                if USE_RICH_UI and console:
+                    console.print(f"✅ [dim]Recording complete! Processing...[/dim]")
                 else:
-                    return f"[ERROR] FFmpeg failed: {error_msg[:100]}"
+                    print("[AUDIO] Recording complete! Processing...")
+                
+                if result.returncode != 0:
+                    error_msg = result.stderr.strip() if result.stderr else "Recording failed"
+                    if "avfoundation" in error_msg.lower():
+                        return "[ERROR] Microphone access denied. Please grant permission in System Settings"
+                    return f"[ERROR] Audio recording failed: {error_msg[:100]}"
+                
+                # Check file size
+                file_size = os.path.getsize(temp_audio_path)
+                
+                # Copy audio file to container
+                copy_cmd = [
+                    "docker", "cp",
+                    temp_audio_path,
+                    f"{container_name}:/tmp/voice_input.wav"
+                ]
+                copy_result = subprocess.run(copy_cmd, capture_output=True, text=True)
+                if copy_result.returncode != 0:
+                    return f"[ERROR] Failed to copy audio to container: {copy_result.stderr}"
+                
+                # Fix file permissions in container (docker cp creates files with wrong ownership)
+                chmod_cmd = ["docker", "exec", "-u", "root", container_name, 
+                            "chown", "agent:agent", "/tmp/voice_input.wav"]
+                subprocess.run(chmod_cmd, capture_output=True)
+                
+                # Use container's FFmpeg with Whisper filter for transcription
+                # The whisper filter outputs to stdout when destination=- is used
+                transcribe_cmd = [
+                    "docker", "exec", container_name,
+                    "ffmpeg",
+                    "-loglevel", "error",  # Only show errors, not debug info
+                    "-i", "/tmp/voice_input.wav",
+                    "-af", f"whisper=model=/app/models/ggml-base.bin:language=en:format=text:destination=-",
+                    "-f", "null",
+                    "-"
+                ]
+                
+                if USE_RICH_UI and console:
+                    console.print("🔄 [dim]Transcribing with Whisper...[/dim]")
+                else:
+                    print("[WHISPER] Transcribing audio...")
+                
+                # Run transcription in container
+                start_time = time.time()
+                transcribe_result = subprocess.run(
+                    transcribe_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                transcribe_time = time.time() - start_time
+                
+                
+                if transcribe_result.returncode != 0:
+                    # Check for errors
+                    error_msg = transcribe_result.stderr.strip() if transcribe_result.stderr else "Transcription failed"
+                    return f"Whisper transcription failed: {error_msg[:200]}"
+                
+                # The whisper filter with destination=- outputs transcription to stdout
+                user_query = transcribe_result.stdout.strip()
+                
+                
+                
+                if USE_RICH_UI and console:
+                    console.print(f"🎙️  [green]Transcribed:[/green] '{user_query}'")
+                else:
+                    print(f"[WHISPER] Transcribed: '{user_query}'")
+                
+                if not user_query:
+                    return "[ERROR] No speech detected. Please try again."
+                
+                
+                # Clean up temp files AFTER successful transcription
+                try:
+                    os.unlink(temp_audio_path)
+                    subprocess.run(
+                        ["docker", "exec", container_name, "rm", "/tmp/voice_input.wav"],
+                        capture_output=True
+                    )
+                except Exception as e:
+                    pass  # Ignore cleanup errors
+                    
+            except subprocess.TimeoutExpired:
+                return "[ERROR] Audio recording/transcription timeout."
+            except subprocess.CalledProcessError as e:
+                return f"[ERROR] Container operation failed: {str(e)}"
+            except Exception as e:
+                return f"[ERROR] Voice processing failed: {str(e)}"
+        else:
+            # Original method: Use FFmpeg with Whisper filter directly (requires custom FFmpeg build)
+            ffmpeg_path = FFMPEG_PATH
+            whisper_model = os.getenv("WHISPER_MODEL_PATH", "/app/models/ggml-base.bin")
 
-            # Get text output directly from FFmpeg Whisper
-            user_query = result.stdout.strip()
+            # Set library paths for FFmpeg with Whisper
+            env = os.environ.copy()
+            if sys.platform == "darwin":
+                # Auto-detect Whisper library paths for macOS
+                dyld_path = os.getenv("DYLD_LIBRARY_PATH", "")
+                if not dyld_path and ffmpeg_path and "whisper" in ffmpeg_path.lower():
+                    # Try to find whisper.cpp build directory relative to ffmpeg
+                    ffmpeg_dir = Path(ffmpeg_path).parent.parent.parent
+                    whisper_build = ffmpeg_dir / "whisper.cpp" / "build"
+                    if whisper_build.exists():
+                        dyld_paths = [
+                            str(whisper_build / "src"),
+                            str(whisper_build / "ggml" / "src"),
+                            str(whisper_build / "ggml" / "src" / "ggml-metal"),
+                            str(whisper_build / "ggml" / "src" / "ggml-blas"),
+                        ]
+                        dyld_path = ":".join([p for p in dyld_paths if Path(p).exists()])
+                if dyld_path:
+                    env["DYLD_LIBRARY_PATH"] = dyld_path
 
-            # Remove any warning messages that might appear in output
-            lines = user_query.split("\n")
-            user_query = " ".join(
-                [line for line in lines if not line.startswith("[") and line.strip()]
-            )
-            user_query = user_query.strip()
+            cmd = [
+                ffmpeg_path,
+                "-loglevel",
+                "warning",
+                *audio_input,
+                "-t",
+                str(VOICE_DURATION),  # Record duration
+                "-af",
+                f"whisper=model={whisper_model}:language=en:format=text:destination=-",
+                "-f",
+                "null",
+                "-",
+            ]
 
-            if USE_RICH_UI and console:
-                console.print(f"🎙️  [green]Transcribed:[/green] '{user_query}'")
-            else:
-                print(f"[MIC] Transcribed: '{user_query}'")
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=VOICE_DURATION + 10, env=env
+                )
 
-            if not user_query:
-                return "[ERROR] No speech detected. Please try again."
+                # Check for errors
+                if result.returncode != 0:
+                    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                    if "Library not loaded" in error_msg or "dyld" in error_msg:
+                        return "[ERROR] FFmpeg Whisper library not found. Check DYLD_LIBRARY_PATH"
+                    elif "avfoundation" in error_msg:
+                        return "[ERROR] Microphone access denied. Please grant permission in System Settings"
+                    else:
+                        return f"[ERROR] FFmpeg failed: {error_msg[:100]}"
 
-        except subprocess.TimeoutExpired:
-            return "[ERROR] Audio recording timeout."
-        except FileNotFoundError:
-            return "[ERROR] FFmpeg not found. Please install FFmpeg with Whisper support."
-        except Exception as e:
-            return f"[ERROR] Transcription failed: {str(e)}"
+                # Get text output directly from FFmpeg Whisper
+                user_query = result.stdout.strip()
+
+                # Remove any warning messages that might appear in output
+                lines = user_query.split("\n")
+                user_query = " ".join(
+                    [line for line in lines if not line.startswith("[") and line.strip()]
+                )
+                user_query = user_query.strip()
+
+                if USE_RICH_UI and console:
+                    console.print(f"🎙️  [green]Transcribed:[/green] '{user_query}'")
+                else:
+                    print(f"[MIC] Transcribed: '{user_query}'")
+
+                if not user_query:
+                    return "[ERROR] No speech detected. Please try again."
+
+            except subprocess.TimeoutExpired:
+                return "[ERROR] Audio recording timeout."
+            except FileNotFoundError:
+                return "[ERROR] FFmpeg not found. Please install FFmpeg with Whisper support."
+            except Exception as e:
+                return f"[ERROR] Transcription failed: {str(e)}"
     else:
         user_query = user_input
 
@@ -543,7 +677,61 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
 
     try:
         response = orchestrator(user_query)
-        return str(response) if response else ""
+        
+        
+        
+        # Check if response has a message with content
+        if hasattr(response, 'message') and response.message:
+            message = response.message
+            
+            # Extract content from message
+            if isinstance(message, dict) and 'content' in message:
+                content = message['content']
+                
+                # Process content items
+                result_text = []
+                tool_executions = []
+                
+                for item in (content if isinstance(content, list) else [content]):
+                    if isinstance(item, dict):
+                        # Check for tool use
+                        if 'toolUse' in item:
+                            tool_use = item['toolUse']
+                            tool_name = tool_use.get('name', 'unknown')
+                            tool_input = tool_use.get('input', {})
+                            tool_executions.append(f"Executed {tool_name}")
+                        # Check for tool result
+                        elif 'toolResult' in item:
+                            tool_result = item['toolResult']
+                            result_content = tool_result.get('content', [])
+                            for result_item in (result_content if isinstance(result_content, list) else [result_content]):
+                                if isinstance(result_item, dict) and 'text' in result_item:
+                                    result_text.append(result_item['text'])
+                        # Check for regular text
+                        elif 'text' in item:
+                            text = item.get('text', '')
+                            if text:
+                                result_text.append(text)
+                
+                # Return combined results
+                if result_text:
+                    return '\n'.join(result_text)
+                elif tool_executions:
+                    return '\n'.join(tool_executions)
+        
+        # Check stop reason to understand completion
+        if hasattr(response, 'stop_reason'):
+            if response.stop_reason == 'tool_use':
+                return "Action completed successfully."
+        
+        # Fallback to string conversion
+        response_str = str(response) if response else ""
+        
+        # If empty, provide informative message
+        if not response_str or response_str.strip() == "":
+            return "Command processed. Check vehicle status for changes."
+        
+        return response_str
     except Exception as e:
         print(f"[ERROR] Orchestrator failed: {e}")
         import traceback
@@ -778,7 +966,6 @@ async def run_api_server():
 
 
 if __name__ == "__main__":
-    # Check if API mode is requested AND we're not in a docker exec session
     # Docker exec sessions will have TERM set but not be the initial startup
     is_docker_exec = (
         os.getenv("TERM") and os.getenv("ENABLE_API") == "true" and os.getenv("API_ALREADY_RUNNING")
