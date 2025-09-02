@@ -264,10 +264,15 @@ def send_to_api(
         request_data = AudioTransport.prepare_api_request(audio_data, session_id)
 
         print(f"Sending audio to {api_url}...")
-        response = requests.post(api_url, json=request_data)
+        response = requests.post(api_url, json=request_data, timeout=300)
 
         if response.status_code == 200:
             result = response.json()
+            
+            # Show transcription if available
+            if "transcription" in result:
+                print(f"🎙️  Transcribed: '{result['transcription']}'")
+            
             print("\nResponse:")
             print(result.get("response", "No response"))
             return 0

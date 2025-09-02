@@ -115,6 +115,9 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
+# Global variable to capture transcription for API mode
+_last_transcription = None
+
 
 def create_bedrock_model():
     """Create new Bedrock model instance with flexible AWS credential handling"""
@@ -165,6 +168,7 @@ def create_llamacpp_model():
             "cache_prompt": True,  # Essential for function calling performance
             "n_batch": int(os.getenv("LLAMA_BATCH_SIZE", "512")),  # Batch processing
             "n_threads": int(os.getenv("GGML_NTHREADS", "6")),  # Thread count
+            "grammar_lazy": False,  # Force grammar to always be active, preventing think tag hallucinations
         },
     )
 
@@ -227,6 +231,8 @@ INTERACTION GUIDELINES:
 - Keep responses concise for in-vehicle safety
 - Offer proactive suggestions when appropriate
 
+Dont ever halluncinate an answer or makeup a response. If a user asks for a task not supported respond with Sorry I cant answer this task
+
 Remember: You coordinate specialist agents to deliver comprehensive assistance while maintaining operational safety and efficiency."""
 
 # General-purpose prompt for cloud/Bedrock deployment
@@ -259,6 +265,8 @@ INTERACTION STYLE:
 - Concise and direct for simple commands
 - Proactive in offering additional insights
 - Clear structure with headings and bullet points when helpful
+
+Dont ever halluncinate an answer or makeup a response. If a user asks for a task not supported respond with Sorry I cant answer this task
 
 You have access to powerful cloud-based reasoning and can handle sophisticated analysis, strategic planning, and detailed explanations across any domain."""
 
@@ -414,17 +422,25 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
         audio_data: Optional audio bytes for voice processing
         audio_format: Format of audio data (default: wav)
     """
-
+    global _last_transcription  # Declare at function start
+    
     # If using API client mode, delegate to API
     if USE_API_CLIENT:
         return process_input_via_api(user_input)
 
     # Handle voice input activation with FFmpeg Whisper
     if user_input.lower() in ["voice", "listen", "speak"] or audio_data is not None:
-        if USE_RICH_UI and console:
-            console.print("🎤 [cyan]Recording audio...[/cyan]")
+        # Only show recording message if we're actually recording (not using provided audio)
+        if audio_data is None:
+            if USE_RICH_UI and console:
+                console.print("🎤 [cyan]Recording audio...[/cyan]")
+            else:
+                print("[VOICE] Recording audio...")
         else:
-            print("[VOICE] Recording audio...")
+            if USE_RICH_UI and console:
+                console.print("🔄 [cyan]Processing provided audio...[/cyan]")
+            else:
+                print("[AUDIO] Processing provided audio...")
 
         # Use FFmpeg with Whisper filter for transcription
         import subprocess
@@ -444,50 +460,62 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
         container_name = os.getenv("CONTAINER_NAME", "strands-edge-personal-assistant")
         
         if use_host_transcription:
-            # Record on host, try to transcribe on host with available tools
+            # Record on host OR use provided audio, then transcribe in container
             try:
                 
                 # Create a temporary WAV file
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
                     temp_audio_path = temp_audio.name
                 
-                # Record audio to WAV file using host FFmpeg (no Whisper needed)
-                record_cmd = [
-                    "ffmpeg",
-                    "-loglevel", "warning",
-                    *audio_input,
-                    "-t", str(VOICE_DURATION),
-                    "-ar", "16000",  # 16kHz sample rate for Whisper
-                    "-ac", "1",      # Mono audio
-                    "-f", "wav",
-                    "-y",            # Overwrite output
-                    temp_audio_path
-                ]
-                
-                
-                if USE_RICH_UI and console:
-                    console.print(f"⏺️  [dim]Recording for {VOICE_DURATION} seconds...[/dim]")
-                
-                # Record the audio
-                start_time = time.time()
-                result = subprocess.run(
-                    record_cmd, 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=VOICE_DURATION + 5
-                )
-                recording_time = time.time() - start_time
-                
-                if USE_RICH_UI and console:
-                    console.print(f"✅ [dim]Recording complete! Processing...[/dim]")
+                # If audio_data is provided (from API), use it instead of recording
+                if audio_data is not None:
+                    # Write provided audio to temp file
+                    with open(temp_audio_path, 'wb') as f:
+                        f.write(audio_data)
+                    
+                    if USE_RICH_UI and console:
+                        console.print("✅ [dim]Audio received, processing...[/dim]")
+                    else:
+                        print("[AUDIO] Audio received, processing...")
                 else:
-                    print("[AUDIO] Recording complete! Processing...")
+                    # Record audio to WAV file using host FFmpeg (no Whisper needed)
+                    record_cmd = [
+                        "ffmpeg",
+                        "-loglevel", "warning",
+                        *audio_input,
+                        "-t", str(VOICE_DURATION),
+                        "-ar", "16000",  # 16kHz sample rate for Whisper
+                        "-ac", "1",      # Mono audio
+                        "-f", "wav",
+                        "-y",            # Overwrite output
+                        temp_audio_path
+                    ]
                 
-                if result.returncode != 0:
-                    error_msg = result.stderr.strip() if result.stderr else "Recording failed"
-                    if "avfoundation" in error_msg.lower():
-                        return "[ERROR] Microphone access denied. Please grant permission in System Settings"
-                    return f"[ERROR] Audio recording failed: {error_msg[:100]}"
+                # Only record if audio_data is not provided
+                if audio_data is None:
+                    if USE_RICH_UI and console:
+                        console.print(f"⏺️  [dim]Recording for {VOICE_DURATION} seconds...[/dim]")
+                    
+                    # Record the audio
+                    start_time = time.time()
+                    result = subprocess.run(
+                        record_cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=VOICE_DURATION + 5
+                    )
+                    recording_time = time.time() - start_time
+                    
+                    if USE_RICH_UI and console:
+                        console.print(f"✅ [dim]Recording complete! Processing...[/dim]")
+                    else:
+                        print("[AUDIO] Recording complete! Processing...")
+                    
+                    if result.returncode != 0:
+                        error_msg = result.stderr.strip() if result.stderr else "Recording failed"
+                        if "avfoundation" in error_msg.lower():
+                            return "[ERROR] Microphone access denied. Please grant permission in System Settings"
+                        return f"[ERROR] Audio recording failed: {error_msg[:100]}"
                 
                 # Check file size
                 file_size = os.path.getsize(temp_audio_path)
@@ -544,6 +572,9 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
                 user_query = transcribe_result.stdout.strip()
                 
                 
+                
+                # Save transcription for API mode
+                _last_transcription = user_query
                 
                 if USE_RICH_UI and console:
                     console.print(f"🎙️  [green]Transcribed:[/green] '{user_query}'")
@@ -634,6 +665,9 @@ def process_input(user_input: str, audio_data: bytes = None, audio_format: str =
                 )
                 user_query = user_query.strip()
 
+                # Save transcription for API mode
+                _last_transcription = user_query
+                
                 if USE_RICH_UI and console:
                     console.print(f"🎙️  [green]Transcribed:[/green] '{user_query}'")
                 else:
@@ -941,6 +975,9 @@ def health_check():
 async def chat_endpoint(request: ChatRequest):
     """Main chat endpoint - supports text and audio input"""
     try:
+        global _last_transcription
+        _last_transcription = None  # Reset for each request
+        
         # Handle audio data if provided
         audio_bytes = None
         if request.audio_data:
@@ -951,7 +988,13 @@ async def chat_endpoint(request: ChatRequest):
                 raise HTTPException(status_code=400, detail=f"Invalid audio data: {str(e)}")
 
         response = process_input(request.prompt, audio_bytes, request.audio_format)
-        return {"response": response, "session_id": request.session_id}
+        
+        # Build response with transcription if available
+        result = {"response": response, "session_id": request.session_id}
+        if _last_transcription:
+            result["transcription"] = _last_transcription
+            
+        return result
     except HTTPException:
         raise
     except Exception as e:

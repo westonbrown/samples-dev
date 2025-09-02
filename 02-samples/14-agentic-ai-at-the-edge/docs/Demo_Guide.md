@@ -22,17 +22,11 @@ cd agentic-ai-at-the-edge
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Download models
-mkdir -p models && cd models
-huggingface-cli download Qwen/Qwen3-1.7B-Instruct-GGUF qwen3-1.7b-instruct-q4_k_m.gguf --local-dir .
-cd ..
+# 3. Create .env with configs 
+.env 
 
-# 4. Start llama-server
-llama-server -m models/qwen3-1.7b-instruct-q4_k_m.gguf \
-  --host 0.0.0.0 --port 8080 -c 2048 --chat-template qwen3
-
-# 5. Verify server is running
-curl http://localhost:8080/health
+# 4. Run setup script to create local docker image and container
+ENABLE_API=true ./setup.sh   
 ```
 
 ## Demo Flow
@@ -43,10 +37,8 @@ curl http://localhost:8080/health
 
 #### Setup
 ```bash
-# Terminal 1: Keep llama-server running
-
-# Terminal 2: Start the assistant
-python main.py
+#Execute in api mode. Endpoint url changes depending on if running locally or in EC2
+python -m src.utils.audio_cli api --duration 3 --url http://localhost:8000/chat 
 ```
 
 #### Demo Script - Climate Control
@@ -238,75 +230,3 @@ curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Set temperature to 72"}'
 ```
-
-## Common Issues & Solutions
-
-### Model Not Loading
-```bash
-# Verify model file exists
-ls -la models/qwen3-1.7b-instruct-q4_k_m.gguf
-
-# Check llama-server is running
-curl http://localhost:8080/health
-```
-
-### Connection Refused
-```bash
-# Ensure correct port
-lsof -i :8080  # Should show llama-server
-
-# Check firewall settings
-sudo ufw status  # Linux
-```
-
-### High Memory Usage
-```bash
-# Reduce context size
-llama-server -m model.gguf -c 1024  # Reduced from 2048
-
-# Use smaller batch size
-export LLAMA_BATCH_SIZE=256
-```
-
-## Performance Metrics
-
-### Expected Performance
-- Response latency: <500ms for simple commands
-- Memory usage: 2-4GB for Qwen3-1.7B
-- CPU usage: 10-30% during inference
-- Token generation: 20-35 tokens/second
-
-### Monitoring
-```bash
-# Monitor resource usage
-docker stats strands-edge-personal-assistant
-
-# Check response times
-time echo "Turn on AC" | python main.py
-```
-
-## Summary
-
-This demo showcases:
-
-**Core Capabilities**:
-- Cockpit Control: Direct control of climate, windows, seats, lights, and drive modes
-- Model Selection: Dynamic routing between local and cloud models
-- Edge Deployment: Optimized for resource-constrained environments
-- Unified Architecture: Same code runs in development and production
-
-**Technical Achievements**:
-- Qwen3-1.7B running efficiently on edge hardware
-- Virtual ECU with safety validation
-- CAN bus signal generation
-- Sub-second response times
-- 2-4GB memory footprint
-
-**Demonstration Highlights**:
-1. Cockpit controls with safety validation (10 min)
-2. Model selection demonstration (5 min)
-3. Deployment modes comparison (5 min)
-4. API integration (optional, 5 min)
-
-Total demo time: 20-25 minutes
-Setup time: 10-15 minutes (one-time)
