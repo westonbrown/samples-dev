@@ -80,14 +80,14 @@ RUN git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg && \
         --enable-version3 \
         --disable-doc \
         --disable-debug \
-        --disable-x86asm || \
+        --disable-x86asm --disable-asm --disable-inline-asm --disable-mmx --disable-sse || \
     PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure \
         --prefix=/usr/local \
         --enable-gpl \
         --enable-version3 \
         --disable-doc \
         --disable-debug \
-        --disable-x86asm && \
+        --disable-x86asm --disable-asm --disable-inline-asm --disable-mmx --disable-sse && \
     make -j$(nproc) && \
     make install && \
     ldconfig
