@@ -8,13 +8,13 @@ This edge deployment packages the complete AI assistant into a single, self-cont
 
 ### Key Features
 
-- **Multimodal Input**: Voice and text processing with Qwen2.5-Omni model
-- **Multi-Agent System**: Specialized agents for calendar, vehicle, and search tasks
-- **Hardware Acceleration**: Automatic optimization for x86_64, ARM64, and Qualcomm platforms
+- **Function-Calling Model**: Fine-tuned Qwen3-1.7B with structured tool use
+- **Cockpit Control Agents**: Climate, window, seat, lighting, and drive mode controls
+- **Container-Based Whisper**: FFmpeg with Whisper filter for secure transcription
+- **Hardware Acceleration**: Automatic optimization for x86_64 and ARM64 platforms
+- **API Mode**: RESTful endpoint with transcription and response metadata
 - **Offline Operation**: Fully functional without internet connectivity
-- **Single Container**: Complete system in one optimized Docker image
-- **API Mode**: RESTful API for automotive and Android Auto integration
-- **Hybrid Model Routing**: Dynamic switching between local and cloud models
+- **Dynamic Model Routing**: Intelligent switching between local and cloud models
 
 ## Architecture
 
@@ -113,23 +113,36 @@ Voice captured: "What's wrong with my tire pressure sensor?"
 ASSISTANT: The tire pressure monitoring system (TPMS) warning...
 ```
 
-### API Mode (Automotive Integration)
+### API Mode (Remote Audio Processing)
 ```bash
-# Start with API mode
-ENABLE_API=true ./deployment/setup.sh
+# Start container for model server
+docker run -d --name strands-edge-personal-assistant \
+  -p 8080:8080 --env-file .env \
+  -v $(pwd)/models:/app/models personal-assistant:edge
 
-# Health check
-curl http://localhost:8000/health
+# Start API server with container-based Whisper
+ENABLE_API=true USE_CONTAINER_WHISPER=true python main.py
 
-# Send chat request
+# Send audio from client (records locally, transcribes on server)
+python -m src.utils.audio_cli api --duration 5 --url http://localhost:8000/chat
+
+# Or send pre-recorded audio via API
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "What does the engine temperature warning mean?", "session_id": "driver-123"}'
+  -d '{
+    "prompt": "voice",
+    "audio_data": "<base64_encoded_wav>",
+    "session_id": "client-123"
+  }'
+```
 
-# Streaming response
-curl -X POST http://localhost:8000/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Schedule oil change next Tuesday at 3pm"}'
+Response includes transcription:
+```json
+{
+  "response": "I've set the temperature to 72 degrees.",
+  "transcription": "Set temperature to 72",
+  "session_id": "client-123"
+}
 ```
 
 ### Android Auto Integration Example

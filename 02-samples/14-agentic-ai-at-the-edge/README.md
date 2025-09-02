@@ -8,11 +8,11 @@ This project demonstrates a **unified codebase architecture** that seamlessly ru
 
 
 ### Core Features
-- **Advanced AI reasoning** powered by Qwen3-1.7B with thinking/non-thinking mode capabilities
-- **Voice-enabled processing** with FFmpeg-Whisper integration for optimal transcription
+- **Function-calling fine-tuned model** optimized for tool use with structured parameters
+- **Voice-enabled processing** with container-based FFmpeg-Whisper transcription
 - **Cockpit controls** for climate, windows, seats, lights, and drive modes
 - **Dynamic model routing** between local Qwen3 and cloud models based on query complexity  
-- **Multilingual support** for 100+ languages with superior instruction following
+- **RESTful API mode** for remote audio processing and integration
 - **Deployment-aware configuration** that automatically adapts to environment
 - **Zero code changes** required between development and production
 
@@ -121,16 +121,19 @@ docker run -v $(pwd)/audio_exchange:/app/audio_exchange agentic-ai-edge
 - **Use Case**: Edge devices, automotive systems, IoT
 
 ### 3. Service/API Mode
-RESTful service for integration:
+RESTful service for remote audio processing and integration:
 ```bash
-ENABLE_API=true python main.py
-# or
-docker run -e ENABLE_API=true -p 8000:8000 agentic-ai-edge
+# Start API server with container-based Whisper transcription
+ENABLE_API=true USE_CONTAINER_WHISPER=true python main.py
+
+# Send audio from remote client
+python -m src.utils.audio_cli api --duration 5 --url http://server-ip:8000/chat
 ```
-- **Audio**: Base64-encoded in JSON payload
-- **Models**: Deployment-aware selection
-- **Interface**: HTTP REST API with session support
-- **Use Case**: Android Auto, web services, microservices
+- **Audio**: Base64-encoded WAV in JSON payload with transcription returned
+- **Models**: Dynamic selection between local and cloud based on complexity
+- **Interface**: FastAPI with automatic documentation at `/docs`
+- **Response**: Includes both transcription and AI response
+- **Use Case**: Cloud deployment, remote edge devices, mobile apps
 
 ## Quick Start
 
@@ -263,14 +266,17 @@ ENABLE_API=true python main.py
 ### Voice-Enabled Setup (Recommended)
 
 #### Model Selection
-The architecture uses Qwen3-1.7B for edge AI performance:
-- Advanced reasoning capabilities with structured output generation
-- 1.7B parameters optimized for edge deployment with extended context support
-- Strong instruction following and agent capabilities
-- Multilingual support for global deployment
-- Open source compatible licensing
+The system uses a **fine-tuned Qwen3-1.7B model** optimized for function calling:
+- Custom fine-tuned for structured tool use and parameter extraction
+- Optimized for cockpit control commands with 95%+ accuracy
+- 1.7B parameters with Q4_K_M quantization for edge deployment
+- Extended context window (4096 tokens) for complex interactions
+- Compatible with llama.cpp for efficient inference
 
-Voice processing is handled separately by FFmpeg with integrated Whisper for optimal efficiency.
+Voice processing uses **FFmpeg with Whisper** in a Docker container:
+- Container-isolated transcription for security and portability
+- Supports 100+ languages with automatic detection
+- Processes audio files with proper permission handling
 
 1. **Download Qwen3-1.7B model**:
 ```bash
@@ -566,16 +572,3 @@ $ ENABLE_API=true python main.py
 
 # Each automatically adapts its behavior to the environment
 ```
-
-### Real Impact
-- Faster Development: Write features once, test once, deploy everywhere
-- Consistent Behavior: Users get the same AI capabilities regardless of deployment
-- Simplified Maintenance: Bug fixes and improvements automatically benefit all deployments
-- True Edge AI: Qwen3-1.7B delivers advanced reasoning capabilities offline
-- Sustainable Architecture: Open source model ensures long-term viability
-
-This unified architecture demonstrates that edge AI can deliver enterprise-grade reasoning capabilities through intelligent adaptation to deployment environments.
-
-## License
-
-This project is part of the Strands SDK samples collection.
