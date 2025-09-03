@@ -7,7 +7,7 @@ ARG TARGETARCH
 ARG BUILDARCH
 
 # Base image selection based on architecture
-FROM --platform=linux/${TARGETARCH} python:3.13-slim as base
+FROM python:3.13-slim as base
 
 # Install system dependencies with architecture-specific optimizations
 RUN apt-get update && apt-get install -y \
@@ -143,7 +143,7 @@ RUN cd /tmp && \
 # ===================================  
 # RUNTIME STAGE - Multi-architecture runtime
 # ===================================
-FROM --platform=linux/${TARGETARCH} python:3.13-slim as runtime
+FROM python:3.13-slim as runtime
 
 ARG TARGETARCH
 ENV TARGETARCH=${TARGETARCH}
