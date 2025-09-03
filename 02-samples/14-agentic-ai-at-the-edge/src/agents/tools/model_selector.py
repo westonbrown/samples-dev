@@ -10,7 +10,10 @@ from strands import tool, Agent
 from strands.models.llamacpp import LlamaCppModel
 import logging
 import json
-from src.config import BEDROCK_MODEL_ID, LLAMACPP_URL
+try:
+    from config import BEDROCK_MODEL_ID, LLAMACPP_URL
+except ImportError:
+    from src.config import BEDROCK_MODEL_ID, LLAMACPP_URL
 
 logger = logging.getLogger(__name__)
 
