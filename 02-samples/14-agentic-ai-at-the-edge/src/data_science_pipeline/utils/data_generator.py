@@ -72,11 +72,60 @@ class ToolRegistry:
     def __init__(self):
         self.tools = self._initialize_tools()
 
+    def _load_cockpit_tools(self) -> Dict[str, ToolSpec]:
+        """Load actual cockpit tools using their tool_spec attributes."""
+        try:
+            # Import cockpit tools (assumes we're running from the proper directory)
+            import sys
+            from pathlib import Path
+            
+            # Add agents directory to path
+            agents_dir = Path(__file__).parent.parent.parent / "agents"
+            sys.path.insert(0, str(agents_dir))
+            
+            from cockpit.climate_control import climate_control
+            from cockpit.lighting_control import lighting_control
+            from cockpit.window_control import window_control
+            from cockpit.seat_control import seat_control
+            from cockpit.drive_mode import drive_mode
+            
+            cockpit_tools = [
+                climate_control,
+                lighting_control,
+                window_control,
+                seat_control,
+                drive_mode
+            ]
+            
+            tools = {}
+            for tool_func in cockpit_tools:
+                if hasattr(tool_func, 'tool_spec'):
+                    spec = tool_func.tool_spec
+                    tool_name = spec['name']
+                    
+                    # Convert Strands tool_spec to our ToolSpec format
+                    tools[tool_name] = ToolSpec(
+                        name=spec['name'],
+                        description=spec['description'],
+                        parameters=spec['inputSchema']['json']
+                    )
+            
+            print(f"✅ Loaded {len(tools)} cockpit tools from Strands")
+            return tools
+            
+        except Exception as e:
+            print(f"⚠️  Could not load cockpit tools ({e}), falling back to hardcoded tools")
+            return self._initialize_fallback_tools()
+
     def _initialize_tools(self) -> Dict[str, ToolSpec]:
-        """Initialize ONLY the 5 production cockpit control tools"""
+        """Initialize tools - try cockpit first, fallback to hardcoded."""
+        return self._load_cockpit_tools()
+
+    def _initialize_fallback_tools(self) -> Dict[str, ToolSpec]:
+        """Initialize ONLY the 5 production cockpit control tools (fallback)"""
 
         tools = {
-            # PRODUCTION TOOLS - Now using structured parameters
+            # FALLBACK TOOLS - Hardcoded specifications when cockpit import fails
             "climate_control": ToolSpec(
                 name="climate_control",
                 description="Control vehicle climate settings including temperature, fan speed, and AC",
@@ -636,7 +685,7 @@ Respond with ONLY the arguments in JSON format."""
     # ====================================================================
 
     def generate_conversation(
-        self, tools: List[ToolSpec], include_multimodal: bool = False, multi_tool: bool = False
+        self, tools: List[ToolSpec], multi_tool: bool = False
     ) -> Optional[Dict[str, Any]]:
         """Generate complete conversation with tool calls"""
 
@@ -652,12 +701,12 @@ Respond with ONLY the arguments in JSON format."""
         )
 
         if multi_tool and len(tools) > 1:
-            return self._generate_multi_tool_conversation(conversation_id, tools, include_multimodal)
+            return self._generate_multi_tool_conversation(conversation_id, tools)
         else:
-            return self._generate_single_tool_conversation(conversation_id, tools, include_multimodal)
+            return self._generate_single_tool_conversation(conversation_id, tools)
 
     def _generate_single_tool_conversation(
-        self, conversation_id: str, tools: List[ToolSpec], include_multimodal: bool
+        self, conversation_id: str, tools: List[ToolSpec]
     ) -> Optional[Dict[str, Any]]:
         """Generate conversation with single tool call"""
         messages = []
@@ -671,7 +720,7 @@ Respond with ONLY the arguments in JSON format."""
         )
 
         # User message
-        user_content = self._generate_user_message(tools[0], include_multimodal)
+        user_content = self._generate_user_message(tools[0])
         messages.append({"role": "user", "content": user_content})
 
         # Assistant response with tool call
@@ -698,10 +747,9 @@ Respond with ONLY the arguments in JSON format."""
         }
 
     def _generate_multi_tool_conversation(
-        self, conversation_id: str, tools: List[ToolSpec], include_multimodal: bool = False
+        self, conversation_id: str, tools: List[ToolSpec]
     ) -> Optional[Dict[str, Any]]:
         """Generate conversation with multiple tool calls"""
-        # Note: include_multimodal not used for multi-tool conversations for simplicity
         messages = []
 
         # System message
@@ -742,38 +790,10 @@ Respond with ONLY the arguments in JSON format."""
             "messages": messages,
         }
 
-    def _generate_user_message(self, tool: ToolSpec, include_multimodal: bool) -> Any:
+    def _generate_user_message(self, tool: ToolSpec) -> str:
         """Generate user message content based on actual usage patterns"""
-
-        if include_multimodal and tool.name in ["analyze_image", "voice_input"]:
-            # Multimodal content
-            content = []
-
-            if tool.name == "analyze_image":
-                content.append(
-                    {
-                        "type": "image",
-                        "image": {"source": {"path": "sign.jpg"}},  # Matches actual demo image
-                    }
-                )
-                # Generate realistic text for image analysis
-                realistic_text = self._generate_user_request(tool)
-                content.append({"type": "text", "text": realistic_text})
-            elif tool.name == "voice_input":
-                content.append(
-                    {
-                        "type": "audio",
-                        "audio": {
-                            "source": {"path": "voice_input.wav"}
-                        },  # Matches actual audio file
-                    }
-                )
-                content.append({"type": "text", "text": "Process this voice input"})
-
-            return content
-        else:
-            # Text-only content - generate realistic request
-            return self._generate_user_request(tool)
+        # Generate realistic text request for the tool
+        return self._generate_user_request(tool)
 
     def _format_assistant_response(self, tool_call: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Format assistant response with tool call"""
@@ -924,9 +944,127 @@ Generate just the response:"""
 
         return "\n".join(lines)
 
+    def _format_for_sft_trainer(self, conversation: Dict) -> Dict[str, Any]:
+        """Format conversation for SFTTrainer with proper HuggingFace tool calling format.
+        
+        Based on HF documentation: https://huggingface.co/docs/trl/en/dataset_formats#tool-calling
+        
+        Returns a dict with:
+        - "messages": List of message dicts with proper tool_calls structure
+        - "tools": List of tool schemas in JSON format
+        
+        Args:
+            conversation: Raw conversation with tools and messages
+            
+        Returns:
+            Dict with "messages" and "tools" keys for SFTTrainer
+        """
+        formatted_messages = []
+        tool_schemas = []
+        
+        # Convert tools to JSON schemas
+        tools = conversation.get('tools', [])
+        for tool in tools:
+            # Handle both original tool format and already-converted HF format
+            if 'function' in tool:
+                # Already in HF format
+                tool_schemas.append(tool)
+            else:
+                # Convert our tool format to HF JSON schema format
+                schema = {
+                    "type": "function",
+                    "function": {
+                        "name": tool['name'],
+                        "description": tool['description'],
+                        "parameters": tool['inputSchema']['json']
+                    }
+                }
+                tool_schemas.append(schema)
+        
+        # Process conversation messages
+        for i, msg in enumerate(conversation.get('messages', [])):
+            if msg['role'] == 'system':
+                # Add system message (but don't include tool definitions since tools are separate)
+                system_content = "You are an AI assistant with access to various tools. Use them to help users effectively."
+                formatted_messages.append({
+                    "role": "system",
+                    "content": system_content
+                })
+                
+            elif msg['role'] == 'user':
+                # Extract user content
+                content = self._extract_user_content(msg)
+                if content:
+                    # Check if this is a tool result
+                    if 'toolResult' in str(msg.get('content', '')) or '[Tool Result:' in content:
+                        # Parse tool result
+                        tool_name = None
+                        tool_content = content
+                        
+                        # Try to extract tool name from previous assistant message
+                        if i > 0:
+                            prev_msg = formatted_messages[-1]
+                            if prev_msg.get('role') == 'assistant' and 'tool_calls' in prev_msg:
+                                tool_name = prev_msg['tool_calls'][0]['function']['name']
+                        
+                        formatted_messages.append({
+                            "role": "tool",
+                            "name": tool_name or "unknown_tool",
+                            "content": tool_content.replace('[Tool Result: ', '').replace(']', '').strip()
+                        })
+                    else:
+                        formatted_messages.append({
+                            "role": "user",
+                            "content": content
+                        })
+                        
+            elif msg['role'] == 'assistant':
+                # Check if this message contains tool calls
+                assistant_content = self._extract_assistant_content(msg)
+                
+                # Look for tool calls in the content (handle multi-line JSON)
+                tool_call_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
+                tool_calls_found = re.findall(tool_call_pattern, assistant_content, re.DOTALL | re.MULTILINE)
+                
+                if tool_calls_found:
+                    # This is a tool call message
+                    tool_calls = []
+                    for tool_call_json in tool_calls_found:
+                        try:
+                            tool_call = json.loads(tool_call_json)
+                            tool_calls.append({
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call["name"],
+                                    "arguments": tool_call["arguments"]  # Keep as dict, not string
+                                }
+                            })
+                        except (json.JSONDecodeError, KeyError) as e:
+                            print(f"Error parsing tool call: {e}")
+                            continue
+                    
+                    if tool_calls:
+                        formatted_messages.append({
+                            "role": "assistant",
+                            "tool_calls": tool_calls
+                        })
+                else:
+                    # Regular assistant message
+                    if assistant_content and assistant_content.strip():
+                        formatted_messages.append({
+                            "role": "assistant",
+                            "content": assistant_content
+                        })
+        
+        return {
+            "messages": formatted_messages,
+            "tools": tool_schemas
+        }
+
     def generate_dataset(
         self, num_examples: int = 1000, output_path: str = "training_data.jsonl",
-        use_batching: bool = True, format_for_training: bool = True
+        use_batching: bool = True, format_for_training: bool = True,
+        output_format: str = "text"  # "text", "conversations", or "raw"
     ) -> None:
         """Generate complete training dataset with rate limiting and batching
         
@@ -934,7 +1072,8 @@ Generate just the response:"""
             num_examples: Number of examples to generate
             output_path: Path to save dataset
             use_batching: Whether to use batch delays
-            format_for_training: If True, convert to plain text training format
+            format_for_training: If True, convert to plain text training format (deprecated, use output_format)
+            output_format: Output format - "text" (legacy), "conversations" (for SFTTrainer), or "raw" (full data)
         """
 
         output_file = Path(output_path)
@@ -965,10 +1104,9 @@ Generate just the response:"""
                         # Select single tool
                         tools = self.tool_registry.get_random_tools(1)
 
-                    # Generate conversation (NO MULTIMODAL for cleaner training)
+                    # Generate conversation
                     conversation = self.generate_conversation(
                         tools,
-                        include_multimodal=False,
                         multi_tool=use_multi_tool
                     )
                     
@@ -976,12 +1114,17 @@ Generate just the response:"""
                         print(f"Skipping example {i+1} due to generation failure.")
                         continue
 
-                    if format_for_training:
-                        # Convert to training format
+                    # Handle different output formats
+                    if output_format == "conversations":
+                        # Format for SFTTrainer: messages and tools in HF format
+                        formatted_data = self._format_for_sft_trainer(conversation)
+                        f.write(json.dumps(formatted_data) + "\n")
+                    elif output_format == "text" or format_for_training:
+                        # Legacy text format
                         training_text = self.convert_to_training_format(conversation)
                         f.write(json.dumps({"text": training_text}) + "\n")
-                    else:
-                        # Keep original format
+                    else:  # "raw"
+                        # Keep original format with all metadata
                         f.write(json.dumps(conversation) + "\n")
 
                     generated_count += 1
@@ -1010,7 +1153,7 @@ def main():
     print("🚀 STRUCTURED PARAMETER TOOL CALLING DATASET GENERATOR")
     print("=" * 60)
     print("✅ Refactored to use structured parameters instead of natural language commands")
-    print("✅ Using proper chat templates when available (transformers)")
+    print("✅ Supporting multiple output formats: text, conversations (SFTTrainer), raw")
     print("✅ Fallback to manual formatting when needed")
     print()
     print("Production Tools:")
@@ -1026,38 +1169,55 @@ def main():
         print("⚠️  Using manual formatting (transformers not available)")
     print("-" * 60)
 
-    # Generate training data
-    print("Generating training dataset...")
+    # Generate training data in SFTTrainer format
+    print("Generating training dataset (SFTTrainer format)...")
+    generator.generate_dataset(
+        num_examples=20,
+        output_path="data/train_sft.jsonl",
+        output_format="conversations"
+    )
+
+    # Generate test data in SFTTrainer format
+    print("\nGenerating test dataset (SFTTrainer format)...")
+    generator.generate_dataset(
+        num_examples=10,
+        output_path="data/test_sft.jsonl",
+        output_format="conversations"
+    )
+
+    # Also generate legacy format for compatibility
+    print("\nGenerating legacy format datasets...")
     generator.generate_dataset(
         num_examples=20,
         output_path="data/train_structured.jsonl",
-        format_for_training=True
+        output_format="text"
     )
-
-    # Generate test data
-    print("\nGenerating test dataset...")
+    
     generator.generate_dataset(
         num_examples=10,
         output_path="data/test_structured.jsonl",
-        format_for_training=True
+        output_format="text"
     )
 
     print("\n🎉 DATASETS GENERATED SUCCESSFULLY!")
     print("=" * 60)
     print("📁 Files created:")
-    print("  - data/train_structured.jsonl (20 examples)")
-    print("  - data/test_structured.jsonl (10 examples)")
+    print("  - data/train_sft.jsonl (20 examples, SFTTrainer format)")
+    print("  - data/test_sft.jsonl (10 examples, SFTTrainer format)")
+    print("  - data/train_structured.jsonl (20 examples, legacy text format)")
+    print("  - data/test_structured.jsonl (10 examples, legacy text format)")
     print()
     print("🔧 Format improvements:")
+    print("  ✅ SFTTrainer-compatible conversation format")
     print("  ✅ Structured parameters instead of natural language commands")
-    print("  ✅ Proper chat template formatting when available")
+    print("  ✅ Runtime chat template application during training")
     print("  ✅ Tool calls with JSON parameters")
     print("  ✅ Better validation and error handling")
     print("  ✅ Multi-tool conversations (30% of examples)")
     print("  ✅ Compound user requests requiring multiple tools")
     print("  ✅ Sequential tool call handling")
     print()
-    print("🚀 Ready for fine-tuning!")
+    print("🚀 Ready for fine-tuning with SFTTrainer!")
 
 
 if __name__ == "__main__":
